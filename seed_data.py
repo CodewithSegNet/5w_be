@@ -161,6 +161,11 @@ EVENTS = [
 ]
 
 async def seed():
+    # Create tables first
+    from database import init_db
+    await init_db()
+    print("Tables created/verified")
+
     async with async_session() as db:
         # Seed blog posts
         for p in BLOG_POSTS:
