@@ -3,6 +3,8 @@
    ══════════════════════════════════════════════════ */
 
 let currentPage = 'overview';
+let _cachedCategories = [];
+let _cachedTags = [];
 
 function toast(msg, type = 'success') {
   const c = document.getElementById('toastContainer');
@@ -11,6 +13,30 @@ function toast(msg, type = 'success') {
   t.textContent = msg;
   c.appendChild(t);
   setTimeout(() => t.remove(), 3500);
+}
+
+/* ── Confirm Dialog (replaces native confirm) ──── */
+function confirmDialog(title, message) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+      <div class="confirm-box">
+        <div class="confirm-icon">⚠</div>
+        <h3 class="confirm-title">${title}</h3>
+        <p class="confirm-msg">${message}</p>
+        <div class="confirm-actions">
+          <button class="btn-secondary confirm-cancel">Cancel</button>
+          <button class="btn-danger-dash confirm-yes">Delete</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add('open'));
+    const cleanup = (result) => { overlay.classList.remove('open'); setTimeout(() => overlay.remove(), 200); resolve(result); };
+    overlay.querySelector('.confirm-cancel').addEventListener('click', () => cleanup(false));
+    overlay.querySelector('.confirm-yes').addEventListener('click', () => cleanup(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
+  });
 }
 
 function openModal(title, bodyHtml) {
@@ -80,6 +106,7 @@ function loadPage(page) {
     case 'blog': loadBlog(); break;
     case 'contacts': loadContacts(); break;
     case 'events': loadEvents(); break;
+    case 'users': loadUsers(); break;
     default: loadOverview();
   }
 }
@@ -121,6 +148,17 @@ async function loadBlog() {
   try {
     const res = await Auth.api('/api/blog/');
     const posts = await res.json();
+
+    // Cache unique categories and tags for dropdown suggestions
+    const catSet = new Set();
+    const tagSet = new Set();
+    posts.forEach(p => {
+      if (p.category) catSet.add(p.category.trim());
+      if (p.tags) p.tags.split(',').forEach(t => { if (t.trim()) tagSet.add(t.trim()); });
+    });
+    _cachedCategories = [...catSet].sort();
+    _cachedTags = [...tagSet].sort();
+
     let rows = '';
     posts.forEach(p => {
       const status = p.is_published ? 'published' : 'draft';
@@ -131,6 +169,7 @@ async function loadBlog() {
         <td><span class="status-badge status-badge--${status}"><span class="status-dot"></span>${status}</span></td>
         <td style="color:var(--text-secondary)">${date}</td>
         <td><div class="action-btns">
+          <button class="action-btn" onclick="previewBlog(${p.id})" title="Preview"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
           <button class="action-btn" onclick="editBlog(${p.id})" title="Edit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
           <button class="action-btn" onclick="uploadBlogImage(${p.id})" title="Upload image">📷</button>
           <button class="action-btn action-btn--danger" onclick="deleteBlog(${p.id})" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
@@ -147,12 +186,17 @@ async function loadBlog() {
 
 function showBlogForm(post = null) {
   const isEdit = !!post;
+  const catOptions = _cachedCategories.map(c => `<option value="${esc(c)}">`).join('');
+  const tagSuggestions = _cachedTags.map(t => `<span class="tag-chip${(post?.tags||'').split(',').map(s=>s.trim()).includes(t)?' tag-chip--active':''}" data-tag="${esc(t)}">${esc(t)}</span>`).join('');
   openModal(isEdit ? 'Edit Post' : 'New Blog Post', `
     <form class="modal-form" id="blogModalForm">
       <div class="form-group"><label>Title</label><input type="text" id="blogTitle" value="${esc(post?.title||'')}" required></div>
       <div class="form-row">
         <div class="form-group"><label>Author</label><input type="text" id="blogAuthor" value="${esc(post?.author||'')}" required></div>
-        <div class="form-group"><label>Category</label><input type="text" id="blogCategory" value="${esc(post?.category||'')}" placeholder="e.g. Fashion, Sustainability"></div>
+        <div class="form-group"><label>Category</label>
+          <input type="text" id="blogCategory" value="${esc(post?.category||'')}" placeholder="Select or type custom…" list="categoryList" autocomplete="off">
+          <datalist id="categoryList">${catOptions}</datalist>
+        </div>
       </div>
       <div class="form-group"><label>Excerpt</label><textarea id="blogExcerpt" rows="2" placeholder="Short summary…">${esc(post?.excerpt||'')}</textarea></div>
       <div class="form-group"><label>Content</label><textarea id="blogContent" rows="8" required placeholder="Write your article…">${esc(post?.content||'')}</textarea></div>
@@ -165,7 +209,14 @@ function showBlogForm(post = null) {
         </div>
         <div id="blogImgPreview" class="image-preview" style="${post?.cover_image?'':'display:none'}">${post?.cover_image?`<img src="${esc(post.cover_image)}"><button type="button" class="image-preview-remove" onclick="removeBlogPreview()">&times;</button>`:''}</div>
       </div>
-      <div class="form-group"><label>Tags</label><input type="text" id="blogTags" value="${esc(post?.tags||'')}" placeholder="e.g. fashion, sustainability, dmu"></div>
+      <div class="form-group"><label>Tags</label>
+        <div class="tag-chips-wrap" id="tagChipsWrap">${tagSuggestions}</div>
+        <div class="tag-input-row">
+          <input type="text" id="blogTagInput" placeholder="Add custom tag…" autocomplete="off">
+          <button type="button" class="btn-secondary btn-sm" id="addTagBtn">+ Add</button>
+        </div>
+        <input type="hidden" id="blogTags" value="${esc(post?.tags||'')}">
+      </div>
       <div class="form-group"><label>External Link</label><input type="url" id="blogExtLink" value="${esc(post?.external_link||'')}" placeholder="https://…"></div>
       <div class="form-group"><label><input type="checkbox" id="blogPublished" ${post?.is_published?'checked':''}> Publish immediately</label></div>
       <div class="modal-actions">
@@ -173,6 +224,38 @@ function showBlogForm(post = null) {
         <button type="submit" class="btn-primary-dash">${isEdit?'Update':'Create'} Post</button>
       </div>
     </form>`);
+
+  // ── Tag chips logic ──
+  function syncTags() {
+    const chips = document.querySelectorAll('#tagChipsWrap .tag-chip--active');
+    const tags = [...chips].map(c => c.dataset.tag);
+    document.getElementById('blogTags').value = tags.join(', ');
+  }
+  document.querySelectorAll('#tagChipsWrap .tag-chip').forEach(chip => {
+    chip.addEventListener('click', () => { chip.classList.toggle('tag-chip--active'); syncTags(); });
+  });
+  document.getElementById('addTagBtn').addEventListener('click', () => {
+    const input = document.getElementById('blogTagInput');
+    const val = input.value.trim();
+    if (!val) return;
+    const wrap = document.getElementById('tagChipsWrap');
+    // Check if already exists
+    const existing = wrap.querySelector(`[data-tag="${val}"]`);
+    if (existing) { existing.classList.add('tag-chip--active'); }
+    else {
+      const chip = document.createElement('span');
+      chip.className = 'tag-chip tag-chip--active';
+      chip.dataset.tag = val;
+      chip.textContent = val;
+      chip.addEventListener('click', () => { chip.classList.toggle('tag-chip--active'); syncTags(); });
+      wrap.appendChild(chip);
+    }
+    input.value = '';
+    syncTags();
+  });
+  document.getElementById('blogTagInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('addTagBtn').click(); }
+  });
   document.getElementById('blogModalForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = {
@@ -233,10 +316,43 @@ async function editBlog(id) {
 }
 
 async function deleteBlog(id) {
-  if (!confirm('Delete this post?')) return;
+  const yes = await confirmDialog('Delete Post', 'Are you sure you want to delete this blog post? This action cannot be undone.');
+  if (!yes) return;
   const res = await Auth.api(`/api/blog/${id}`, { method:'DELETE' });
   if (res.ok) { toast('Post deleted'); loadBlog(); }
   else toast('Delete failed','error');
+}
+
+async function previewBlog(id) {
+  const res = await Auth.api(`/api/blog/${id}`);
+  if (!res.ok) return;
+  const p = await res.json();
+  const date = new Date(p.created_at).toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'});
+  const coverHtml = p.cover_image
+    ? `<div class="preview-cover" style="background-image:url('${esc(p.cover_image)}');background-size:cover;background-position:center;height:220px;border-radius:var(--radius-sm);margin-bottom:1.5rem;"></div>`
+    : `<div class="preview-cover" style="background:linear-gradient(135deg,#210747,#811654,#c43b8e);height:220px;border-radius:var(--radius-sm);margin-bottom:1.5rem;display:flex;align-items:flex-end;padding:1.5rem;"><span style=\"font-size:2rem;font-weight:600;color:rgba(255,255,255,0.15);font-family:'Cormorant Garamond',serif;\">5 Ws</span></div>`;
+  const tagsHtml = p.tags ? `<div style="margin-top:1rem;display:flex;flex-wrap:wrap;gap:0.3rem;">${p.tags.split(',').map(t => `<span class="tag-chip tag-chip--active">${esc(t.trim())}</span>`).join('')}</div>` : '';
+  const statusBadge = `<span class="status-badge status-badge--${p.is_published?'published':'draft'}"><span class="status-dot"></span>${p.is_published?'Published':'Draft'}</span>`;
+  openModal('Preview: ' + p.title, `
+    <div class="preview-post">
+      ${coverHtml}
+      <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap;">
+        ${statusBadge}
+        <span style="font-size:0.8rem;color:var(--text-muted);">${date}</span>
+        <span style="font-size:0.8rem;color:var(--text-muted);">by ${esc(p.author||'')}</span>
+        ${p.category ? `<span style="font-size:0.75rem;color:var(--brand-accent);background:var(--brand-glow);padding:0.2rem 0.6rem;border-radius:12px;">${esc(p.category)}</span>` : ''}
+      </div>
+      <h2 style="font-family:'Cormorant Garamond',serif;font-size:1.6rem;font-weight:600;margin-bottom:0.5rem;color:var(--text-primary);">${esc(p.title)}</h2>
+      ${p.excerpt ? `<p style="color:var(--text-secondary);font-size:0.9rem;font-style:italic;margin-bottom:1rem;line-height:1.6;">${esc(p.excerpt)}</p>` : ''}
+      <div style="color:var(--text-primary);font-size:0.88rem;line-height:1.8;max-height:300px;overflow-y:auto;padding-right:0.5rem;">${p.content ? (/<[a-z][\s\S]*>/i.test(p.content) ? p.content : p.content.split('\n\n').map(para=>'<p>'+esc(para)+'</p>').join('')) : '<p style="color:var(--text-muted)">No content yet</p>'}</div>
+      ${tagsHtml}
+      ${p.external_link ? `<a href="${esc(p.external_link)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.4rem;margin-top:1rem;color:var(--brand-accent);font-size:0.85rem;text-decoration:none;">Read More →</a>` : ''}
+    </div>
+    <div class="modal-actions" style="margin-top:1.5rem;">
+      <button class="btn-secondary" onclick="closeModal()">Close</button>
+      <button class="btn-primary-dash" onclick="closeModal();editBlog(${p.id})">Edit Post</button>
+    </div>
+  `);
 }
 
 function uploadBlogImage(id) {
@@ -349,7 +465,8 @@ async function archiveContact(id) {
   toast('Archived'); loadContacts(); loadUnreadCount();
 }
 async function deleteContact(id) {
-  if (!confirm('Delete this message?')) return;
+  const yes = await confirmDialog('Delete Message', 'Are you sure you want to delete this contact message? This action cannot be undone.');
+  if (!yes) return;
   await Auth.api(`/api/contacts/${id}`, { method:'DELETE' });
   toast('Deleted'); loadContacts(); loadUnreadCount();
 }
@@ -364,7 +481,7 @@ async function loadEvents() {
     events.forEach(ev => {
       const imgHtml = ev.image_url
         ? `<div class="event-dash-img"><img src="${esc(ev.image_url)}" alt="${esc(ev.title)}"></div>`
-        : `<div class="event-dash-img">No image</div>`;
+        : `<div class="event-dash-img" style="background:linear-gradient(135deg, #210747 0%, #811654 70%, #c43b8e 100%);display:flex;align-items:flex-end;padding:1rem;"><span style="font-size:1.5rem;font-weight:600;color:rgba(255,255,255,0.15);font-family:'Cormorant Garamond',serif;">5 Ws</span></div>`;
       const status = ev.is_published ? 'published' : 'draft';
       cards += `<div class="event-dash-card">
         ${imgHtml}
@@ -376,6 +493,7 @@ async function loadEvents() {
             <span class="event-dash-date">${esc(ev.event_date||'')}</span>
           </div>
           <div class="action-btns" style="margin-top:0.75rem">
+            <button class="action-btn" onclick="previewEvent(${ev.id})" title="Preview"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
             <button class="action-btn" onclick="editEvent(${ev.id})" title="Edit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
             <button class="action-btn" onclick="uploadEventImage(${ev.id})" title="Upload image">📷</button>
             <button class="action-btn action-btn--danger" onclick="deleteEvent(${ev.id})" title="Delete">✕</button>
@@ -488,9 +606,139 @@ async function editEvent(id) {
 }
 
 async function deleteEvent(id) {
-  if (!confirm('Delete this event?')) return;
+  const yes = await confirmDialog('Delete Event', 'Are you sure you want to delete this event? This action cannot be undone.');
+  if (!yes) return;
   const res = await Auth.api(`/api/events/${id}`, { method:'DELETE' });
   if (res.ok) { toast('Event deleted'); loadEvents(); }
+}
+
+async function previewEvent(id) {
+  const res = await Auth.api(`/api/events/${id}`);
+  if (!res.ok) return;
+  const ev = await res.json();
+  const imgHtml = ev.image_url
+    ? `<div style="background-image:url('${esc(ev.image_url)}');background-size:cover;background-position:center;height:200px;border-radius:var(--radius-sm);margin-bottom:1.5rem;"></div>`
+    : `<div style="background:linear-gradient(135deg,#210747,#811654,#c43b8e);height:200px;border-radius:var(--radius-sm);margin-bottom:1.5rem;display:flex;align-items:flex-end;padding:1.5rem;"><span style=\"font-size:2rem;font-weight:600;color:rgba(255,255,255,0.15);font-family:'Cormorant Garamond',serif;\">5 Ws</span></div>`;
+  const statusBadge = `<span class="status-badge status-badge--${ev.is_published?'published':'draft'}"><span class="status-dot"></span>${ev.is_published?'Published':'Draft'}</span>`;
+  openModal('Preview: ' + ev.title, `
+    <div class="preview-event">
+      ${imgHtml}
+      <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap;">
+        ${statusBadge}
+        ${ev.badge ? `<span style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;background:var(--brand-glow);color:var(--brand-accent);padding:0.25rem 0.65rem;border-radius:4px;">${esc(ev.badge)}</span>` : ''}
+        ${ev.event_date ? `<span style="font-size:0.8rem;color:var(--text-muted);">${esc(ev.event_date)}</span>` : ''}
+      </div>
+      <h2 style="font-family:'Cormorant Garamond',serif;font-size:1.5rem;font-weight:600;margin-bottom:0.5rem;color:var(--text-primary);">${esc(ev.title)}</h2>
+      <p style="color:var(--text-secondary);font-size:0.9rem;line-height:1.7;margin-bottom:1rem;">${esc(ev.description)}</p>
+      <div style="display:flex;gap:1.5rem;flex-wrap:wrap;font-size:0.82rem;color:var(--text-muted);">
+        ${ev.location ? `<span>📍 ${esc(ev.location)}</span>` : ''}
+        ${ev.author ? `<span>✍️ ${esc(ev.author)}</span>` : ''}
+      </div>
+      ${ev.external_link ? `<a href="${esc(ev.external_link)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.4rem;margin-top:1rem;color:var(--brand-accent);font-size:0.85rem;text-decoration:none;">${esc(ev.link_text||'View details')} →</a>` : ''}
+    </div>
+    <div class="modal-actions" style="margin-top:1.5rem;">
+      <button class="btn-secondary" onclick="closeModal()">Close</button>
+      <button class="btn-primary-dash" onclick="closeModal();editEvent(${ev.id})">Edit Event</button>
+    </div>
+  `);
+}
+
+/* ── USERS MANAGEMENT ─────────────────────────── */
+async function loadUsers() {
+  const area = document.getElementById('contentArea');
+  try {
+    const res = await Auth.api('/api/auth/users');
+    const users = await res.json();
+    let rows = '';
+    users.forEach(u => {
+      const date = new Date(u.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+      const isMe = Auth.admin?.id === u.id;
+      rows += `<tr>
+        <td><div style="display:flex;align-items:center;gap:0.75rem;">
+          <div class="admin-avatar" style="width:34px;height:34px;font-size:0.8rem;">${esc(u.full_name.charAt(0).toUpperCase())}</div>
+          <div><strong>${esc(u.full_name)}</strong>${isMe?' <span style="font-size:0.7rem;color:var(--brand-accent);">(you)</span>':''}<br><span style="color:var(--text-muted);font-size:0.78rem;">${esc(u.email)}</span></div>
+        </div></td>
+        <td style="color:var(--text-secondary);">${date}</td>
+        <td><div class="action-btns">
+          <button class="action-btn" onclick="editUser(${u.id},'${esc(u.full_name)}','${esc(u.email)}')" title="Edit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+          ${!isMe ? `<button class="action-btn action-btn--danger" onclick="deleteUser(${u.id},'${esc(u.full_name)}')" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+    area.innerHTML = `
+      <div class="page-header"><div><h1>User Management</h1><p>Manage admin accounts</p></div>
+        <div class="header-actions"><button class="btn-primary-dash" onclick="showAddUserForm()">+ Add Admin</button></div></div>
+      <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Name / Email</th><th>Joined</th><th>Actions</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="3" class="table-empty">No users found</td></tr>'}</tbody></table></div>`;
+  } catch(e) { area.innerHTML = '<p style="color:var(--danger);padding:2rem">Failed to load users</p>'; }
+}
+
+function showAddUserForm() {
+  openModal('Add Admin User', `
+    <form class="modal-form" id="addUserForm">
+      <div class="form-group"><label>Full Name</label><input type="text" id="newUserName" required></div>
+      <div class="form-group"><label>Email</label><input type="email" id="newUserEmail" required></div>
+      <div class="form-group"><label>Password</label>${pwWrapHtml('newUserPassword','Min 6 characters','required minlength="6"')}</div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn-primary-dash">Create Admin</button>
+      </div>
+    </form>`);
+  document.getElementById('addUserForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await Auth.api('/api/auth/register', {
+        method: 'POST',
+        body: { full_name: document.getElementById('newUserName').value, email: document.getElementById('newUserEmail').value, password: document.getElementById('newUserPassword').value }
+      });
+      if (res.ok) { closeModal(); toast('Admin created'); loadUsers(); }
+      else { const err = await res.json(); toast(err.detail || 'Error', 'error'); }
+    } catch(e) { toast('Network error','error'); }
+  });
+}
+
+function editUser(id, name, email) {
+  openModal('Edit Admin', `
+    <form class="modal-form" id="editUserForm">
+      <div class="form-group"><label>Full Name</label><input type="text" id="editUserName" value="${esc(name)}" required></div>
+      <div class="form-group"><label>Email</label><input type="email" id="editUserEmail" value="${esc(email)}" required></div>
+      <div class="form-group"><label>New Password <span style="color:var(--text-muted);font-size:0.7rem;">(leave blank to keep current)</span></label>${pwWrapHtml('editUserPassword','Min 6 characters','minlength="6"')}</div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn-primary-dash">Update</button>
+      </div>
+    </form>`);
+  document.getElementById('editUserForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      full_name: document.getElementById('editUserName').value,
+      email: document.getElementById('editUserEmail').value,
+    };
+    const pw = document.getElementById('editUserPassword').value;
+    if (pw) body.password = pw;
+    try {
+      const res = await Auth.api(`/api/auth/users/${id}`, { method: 'PUT', body });
+      if (res.ok) {
+        closeModal(); toast('Admin updated'); loadUsers();
+        // If editing self, update session display
+        if (Auth.admin?.id === id) {
+          Auth.admin.full_name = body.full_name;
+          Auth.admin.email = body.email;
+          localStorage.setItem('5wof_admin', JSON.stringify(Auth.admin));
+          document.getElementById('adminName').textContent = body.full_name;
+          document.getElementById('adminAvatar').textContent = body.full_name.charAt(0).toUpperCase();
+        }
+      } else { const err = await res.json(); toast(err.detail || 'Error', 'error'); }
+    } catch(e) { toast('Network error','error'); }
+  });
+}
+
+async function deleteUser(id, name) {
+  const yes = await confirmDialog('Delete Admin', `Are you sure you want to delete <strong>${name}</strong>? This action cannot be undone.`);
+  if (!yes) return;
+  const res = await Auth.api(`/api/auth/users/${id}`, { method:'DELETE' });
+  if (res.ok) { toast('Admin deleted'); loadUsers(); }
+  else { const err = await res.json(); toast(err.detail || 'Delete failed', 'error'); }
 }
 
 function uploadEventImage(id) {
